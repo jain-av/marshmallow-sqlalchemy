@@ -1,7 +1,7 @@
 Changelog
 ---------
 
-1.3.0 (unreleased)
+1.3.0 (2025-01-11)
 ++++++++++++++++++
 
 Features:
@@ -16,7 +16,7 @@ Bug fixes:
   schema sets ``include_fk = True`` (:issue:`440`).
   Thanks :user:`uhnomoli` for reporting.
 * Fields generated from non-nullable `sqlalchemy.orm.relationship`
-  correctly set ``required=True`` and ``allow_none=False`` (:issue:`336`).
+  correctly set ``required=True`` and ``allow_none=False`` (:issue:`336`, :issue:`163`).
   Thanks :user:`AbdealiLoKo` for reporting.
 
 Other changes:
