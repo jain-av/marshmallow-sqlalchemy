@@ -1,14 +1,14 @@
-Contributing Guidelines
+Contributing guidelines
 =======================
 
-Questions, Feature Requests, Bug Reports, and Feedback. . .
+Questions, feature requests, bug reports, and feedback. . .
 -----------------------------------------------------------
 
 …should all be reported on the `Github Issue Tracker`_ .
 
 .. _`Github Issue Tracker`: https://github.com/marshmallow-code/marshmallow-sqlalchemy/issues?state=open
 
-Setting Up for Local Development
+Setting up for local development
 --------------------------------
 
 1. Fork marshmallow-sqlalchemy_ on Github.
@@ -32,9 +32,9 @@ Setting Up for Local Development
 .. code-block:: shell-session
 
     # The pre-commit CLI was installed above
-    $ pre-commit install --allow-missing-config
+    $ pre-commit install
 
-Pull Requests
+Pull requests
 --------------
 
 1. Create a new local branch.
@@ -63,10 +63,10 @@ Pull Requests
    The `CI <https://github.com/marshmallow-code/marshmallow-sqlalchemy/actions/workflows/build-release.yml>`_ build
    must be passing before your pull request is merged.
 
-Running Tests
+Running tests
 -------------
 
-To run all To run all tests:
+To run all tests:
 
 .. code-block:: shell-session
 
