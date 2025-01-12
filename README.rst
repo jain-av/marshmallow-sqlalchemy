@@ -117,9 +117,9 @@ Make sure to declare `Models` before instantiating `Schemas`. Otherwise `sqlalch
         session.add(book)
         session.commit()
 
-    dump_data = author_schema.dump(author)
-    print(dump_data)
-    # {'id': 1, 'name': 'Chuck Paluhniuk', 'books': [1]}
+        dump_data = author_schema.dump(author)
+        print(dump_data)
+        # {'id': 1, 'name': 'Chuck Paluhniuk', 'books': [1]}
 
     with Session() as session:
         load_data = author_schema.load(dump_data, session=session)
