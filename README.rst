@@ -39,7 +39,7 @@ Declare your models
         name = sa.Column(sa.String, nullable=False)
 
         def __repr__(self):
-            return "<Author(name={self.name!r})>".format(self=self)
+            return f"<Author(name={self.name!r})>"
 
 
     class Book(Base):
