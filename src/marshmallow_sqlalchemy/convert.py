@@ -4,13 +4,28 @@ import functools
 import inspect
 import uuid
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Callable, Literal, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Literal,
+    Union,
+    cast,
+    overload,
+)
+
+# Remove when dropping Python 3.9
+try:
+    from typing import TypeAlias, TypeGuard
+except ImportError:
+    from typing_extensions import TypeAlias, TypeGuard
 
 import marshmallow as ma
 import sqlalchemy as sa
 from marshmallow import fields, validate
 from sqlalchemy.dialects import mssql, mysql, postgresql
 from sqlalchemy.orm import SynonymProperty
+from sqlalchemy.types import TypeEngine
 
 from .exceptions import ModelConversionError
 from .fields import Related, RelatedList
@@ -18,14 +33,17 @@ from .fields import Related, RelatedList
 if TYPE_CHECKING:
     from sqlalchemy.ext.declarative import DeclarativeMeta
     from sqlalchemy.orm import MapperProperty
-    from sqlalchemy.types import TypeEngine
 
     PropertyOrColumn = MapperProperty | sa.Column
 
-_FieldClassFactory = Callable[[Any, Any], type[fields.Field]]
+_FieldPartial: TypeAlias = Callable[[], fields.Field]
+# TODO: Use more specific type for second argument
+_FieldClassFactory: TypeAlias = Callable[
+    ["ModelConverter", Any], Union[type[fields.Field], _FieldPartial]
+]
 
 
-def _is_field(value) -> bool:
+def _is_field(value: Any) -> TypeGuard[type[fields.Field]]:
     return isinstance(value, type) and issubclass(value, fields.Field)
 
 
@@ -49,17 +67,30 @@ def _is_auto_increment(column) -> bool:
     return column.table is not None and column is column.table._autoincrement_column
 
 
-def _postgres_array_factory(converter: ModelConverter, data_type: postgresql.ARRAY):
-    return functools.partial(
-        fields.List,
-        converter._get_field_class_for_data_type(data_type.item_type),
-    )
+def _list_field_factory(
+    converter: ModelConverter, data_type: postgresql.ARRAY
+) -> Callable[[], fields.List]:
+    FieldClass = converter._get_field_class_for_data_type(data_type.item_type)
+    inner = FieldClass()
+    if not data_type.dimensions or data_type.dimensions == 1:
+        return functools.partial(fields.List, inner)
+
+    # For multi-dimensional arrays, nest the Lists
+    dimensions = data_type.dimensions
+    for _ in range(dimensions - 1):
+        inner = fields.List(inner)
+
+    return functools.partial(fields.List, inner)
 
 
 def _enum_field_factory(
     converter: ModelConverter, data_type: sa.Enum
-) -> type[fields.Field]:
-    return fields.Enum if data_type.enum_class else fields.Raw
+) -> Callable[[], fields.Field]:
+    return (
+        functools.partial(fields.Enum, enum=data_type.enum_class)
+        if data_type.enum_class
+        else fields.Raw
+    )
 
 
 class ModelConverter:
@@ -72,6 +103,7 @@ class ModelConverter:
     ] = {
         sa.Enum: _enum_field_factory,
         sa.JSON: fields.Raw,
+        sa.ARRAY: _list_field_factory,
         sa.PickleType: fields.Raw,
         postgresql.BIT: fields.Integer,
         postgresql.OID: fields.Integer,
@@ -82,7 +114,7 @@ class ModelConverter:
         postgresql.JSON: fields.Raw,
         postgresql.JSONB: fields.Raw,
         postgresql.HSTORE: fields.Raw,
-        postgresql.ARRAY: _postgres_array_factory,
+        postgresql.ARRAY: _list_field_factory,
         postgresql.MONEY: fields.Decimal,
         postgresql.DATE: fields.Date,
         postgresql.TIME: fields.Time,
@@ -335,14 +367,18 @@ class ModelConverter:
     def _get_field_class_for_data_type(
         self, data_type: TypeEngine
     ) -> type[fields.Field]:
-        field_cls = None
+        field_cls: type[fields.Field] | _FieldPartial | None = None
         types = inspect.getmro(type(data_type))
         # First search for a field class from self.SQLA_TYPE_MAPPING
         for col_type in types:
             if col_type in self.SQLA_TYPE_MAPPING:
-                field_cls = self.SQLA_TYPE_MAPPING[col_type]
-                if callable(field_cls) and not _is_field(field_cls):
-                    field_cls = cast(_FieldClassFactory, field_cls)(self, data_type)
+                field_or_factory = self.SQLA_TYPE_MAPPING[col_type]
+                if _is_field(field_or_factory):
+                    field_cls = field_or_factory
+                else:
+                    field_cls = cast(_FieldClassFactory, field_or_factory)(
+                        self, data_type
+                    )
                 break
         else:
             # Try to find a field class based on the column's python_type
