@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import MapperProperty
     from sqlalchemy.types import TypeEngine
 
-    PropertyOrColumn = MapperProperty | sa.Column
+    PropertyOrColumn: TypeAlias = MapperProperty | sa.Column
 
 _FieldPartial: TypeAlias = Callable[[], fields.Field]
 # TODO: Use more specific type for second argument
