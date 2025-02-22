@@ -9,12 +9,10 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.orm import (
-    DeclarativeMeta,
+    DeclarativeBase,
     Mapped,
     backref,
     column_property,
-    declarative_base,
-    relationship,
     sessionmaker,
     synonym,
 )
@@ -37,8 +35,8 @@ class AnotherText(sa.types.TypeDecorator):
 
 
 @pytest.fixture
-def Base() -> type:
-    return declarative_base()
+def Base() -> type[DeclarativeBase]:
+    return DeclarativeBase()
 
 
 @pytest.fixture
@@ -61,20 +59,20 @@ CourseLevel = Enum("CourseLevel", "PRIMARY SECONDARY")
 
 @dataclass
 class Models:
-    Course: type[DeclarativeMeta]
-    School: type[DeclarativeMeta]
-    Student: type[DeclarativeMeta]
-    Teacher: type[DeclarativeMeta]
-    SubstituteTeacher: type[DeclarativeMeta]
-    Paper: type[DeclarativeMeta]
-    GradedPaper: type[DeclarativeMeta]
-    Seminar: type[DeclarativeMeta]
-    Lecture: type[DeclarativeMeta]
-    Keyword: type[DeclarativeMeta]
+    Course: type
+    School: type
+    Student: type
+    Teacher: type
+    SubstituteTeacher: type
+    Paper: type
+    GradedPaper: type
+    Seminar: type
+    Lecture: type
+    Keyword: type
 
 
 @pytest.fixture
-def models(Base: type) -> Models:
+def models(Base: type[DeclarativeBase]) -> Models:
     # models adapted from https://github.com/wtforms/wtforms-sqlalchemy/blob/master/tests/tests.py
     student_course = sa.Table(
         "student_course",
