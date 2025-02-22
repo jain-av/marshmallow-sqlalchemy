@@ -1,26 +1,20 @@
-from .convert import (
+from marshmallow_sqlalchemy import (
     ModelConverter,
+    SQLAlchemyAutoSchema,
+    SQLAlchemySchema,
+    auto_field,
     column2field,
     field_for,
     fields_for_model,
     property2field,
 )
-from .exceptions import ModelConversionError
-from .schema import (
-    SQLAlchemyAutoSchema,
-    SQLAlchemyAutoSchemaOpts,
-    SQLAlchemySchema,
-    SQLAlchemySchemaOpts,
-    auto_field,
-)
+from marshmallow_sqlalchemy.exceptions import ModelConversionError
 
 __all__ = [
     "ModelConversionError",
     "ModelConverter",
     "SQLAlchemyAutoSchema",
-    "SQLAlchemyAutoSchemaOpts",
     "SQLAlchemySchema",
-    "SQLAlchemySchemaOpts",
     "auto_field",
     "column2field",
     "field_for",

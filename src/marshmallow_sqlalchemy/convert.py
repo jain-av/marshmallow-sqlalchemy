@@ -31,7 +31,7 @@ from .fields import Related, RelatedList
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from sqlalchemy.ext.declarative import DeclarativeMeta
+    from sqlalchemy.orm import DeclarativeBase
     from sqlalchemy.orm import MapperProperty
     from sqlalchemy.types import TypeEngine
 
@@ -141,7 +141,7 @@ class ModelConverter:
 
     def fields_for_model(
         self,
-        model: type[DeclarativeMeta],
+        model: type[DeclarativeBase],
         *,
         include_fk: bool = False,
         include_relationships: bool = False,
@@ -283,6 +283,291 @@ class ModelConverter:
     ) -> fields.Field | type[fields.Field]:
         """Convert a SQLAlchemy `Column <sqlalchemy.schema.Column>` to a field instance or class.
 
+from __future__ import annotations
+
+import functools
+import inspect
+import uuid
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Literal,
+    Union,
+    cast,
+    overload,
+)
+
+# Remove when dropping Python 3.9
+try:
+    from typing import TypeAlias, TypeGuard
+except ImportError:
+    from typing_extensions import TypeAlias, TypeGuard
+
+import marshmallow as ma
+import sqlalchemy as sa
+from marshmallow import fields, validate
+from sqlalchemy.dialects import mssql, mysql, postgresql
+from sqlalchemy.orm import attributes, DeclarativeBase
+from sqlalchemy.orm import SynonymProperty
+
+from .exceptions import ModelConversionError
+from .fields import Related, RelatedList
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from sqlalchemy.orm import MapperProperty
+    from sqlalchemy.types import TypeEngine
+
+    PropertyOrColumn: TypeAlias = MapperProperty | sa.Column[Any]
+
+_FieldPartial: TypeAlias = Callable[[], fields.Field]
+# TODO: Use more specific type for second argument
+_FieldClassFactory: TypeAlias = Callable[
+    ["ModelConverter", Any], Union[type[fields.Field], _FieldPartial]
+]
+
+
+def _is_field(value: Any) -> TypeGuard[type[fields.Field]]:
+    return isinstance(value, type) and issubclass(value, fields.Field)
+
+
+def _base_column(column: sa.Column[Any]) -> sa.Column[Any]:
+    """Unwrap proxied columns"""
+    if column not in column.base_columns and len(column.base_columns) == 1:
+        [base] = column.base_columns
+        return base
+    return column
+
+
+def _has_default(column: sa.Column[Any]) -> bool:
+    return (
+        column.default is not None
+        or column.server_default is not None
+        or _is_auto_increment(column)
+    )
+
+
+def _is_auto_increment(column: sa.Column[Any]) -> bool:
+    return column.table is not None and column is column.table._autoincrement_column
+
+
+def _list_field_factory(
+    converter: ModelConverter, data_type: postgresql.ARRAY
+) -> Callable[[], fields.List]:
+    FieldClass = converter._get_field_class_for_data_type(data_type.item_type)
+    inner = FieldClass()
+    if not data_type.dimensions or data_type.dimensions == 1:
+        return functools.partial(fields.List, inner)
+
+    # For multi-dimensional arrays, nest the Lists
+    dimensions = data_type.dimensions
+    for _ in range(dimensions - 1):
+        inner = fields.List(inner)
+
+    return functools.partial(fields.List, inner)
+
+
+def _enum_field_factory(
+    converter: ModelConverter, data_type: sa.Enum
+) -> Callable[[], fields.Field]:
+    return (
+        functools.partial(fields.Enum, enum=data_type.enum_class)
+        if data_type.enum_class
+        else fields.Raw
+    )
+
+
+class ModelConverter:
+    """Converts a SQLAlchemy model into a dictionary of corresponding
+    marshmallow `Fields <marshmallow.fields.Field>`.
+    """
+
+    SQLA_TYPE_MAPPING: dict[
+        type[TypeEngine], type[fields.Field] | _FieldClassFactory
+    ] = {
+        sa.Enum: _enum_field_factory,
+        sa.JSON: fields.Raw,
+        sa.ARRAY: _list_field_factory,
+        sa.PickleType: fields.Raw,
+        postgresql.BIT: fields.Integer,
+        postgresql.OID: fields.Integer,
+        postgresql.UUID: fields.UUID,
+        postgresql.MACADDR: fields.String,
+        postgresql.INET: fields.String,
+        postgresql.CIDR: fields.String,
+        postgresql.JSON: fields.Raw,
+        postgresql.JSONB: fields.Raw,
+        postgresql.HSTORE: fields.Raw,
+        postgresql.ARRAY: _list_field_factory,
+        postgresql.MONEY: fields.Decimal,
+        postgresql.DATE: fields.Date,
+        postgresql.TIME: fields.Time,
+        mysql.BIT: fields.Integer,
+        mysql.YEAR: fields.Integer,
+        mysql.SET: fields.List,
+        mysql.ENUM: fields.Field,
+        mysql.INTEGER: fields.Integer,
+        mysql.DATETIME: fields.DateTime,
+        mssql.BIT: fields.Integer,
+        mssql.UNIQUEIDENTIFIER: fields.UUID,
+    }
+    DIRECTION_MAPPING = {"MANYTOONE": False, "MANYTOMANY": True, "ONETOMANY": True}
+
+    def __init__(self, schema_cls: type[ma.Schema] | None = None):
+        self.schema_cls = schema_cls
+
+    @property
+    def type_mapping(self) -> dict[type, type[fields.Field]]:
+        if self.schema_cls:
+            return self.schema_cls.TYPE_MAPPING
+        return ma.Schema.TYPE_MAPPING
+
+    def fields_for_model(
+        self,
+        model: type[DeclarativeBase],
+        *,
+        include_fk: bool = False,
+        include_relationships: bool = False,
+        fields: Iterable[str] | None = None,
+        exclude: Iterable[str] | None = None,
+        base_fields: dict | None = None,
+        dict_cls: type[dict] = dict,
+    ) -> dict[str, fields.Field]:
+        """Generate a dict of field_name: `marshmallow.fields.Field` pairs for the given model.
+        Note: SynonymProperties are ignored. Use an explicit field if you want to include a synonym.
+
+        :param model: The SQLAlchemy model
+        :param bool include_fk: Whether to include foreign key fields in the output.
+        :param bool include_relationships: Whether to include relationships fields in the output.
+        :return: dict of field_name: Field instance pairs
+        """
+        result = dict_cls()
+        base_fields = base_fields or {}
+
+        for prop in sa.inspect(model).attrs:  # type: ignore[union-attr]
+            key = self._get_field_name(prop)
+            if self._should_exclude_field(prop, fields=fields, exclude=exclude):
+                # Allow marshmallow to validate and exclude the field key.
+                result[key] = None
+                continue
+            if isinstance(prop, SynonymProperty):
+                continue
+            if hasattr(prop, "columns"):
+                if not include_fk:
+                    # Only skip a column if there is no overriden column
+                    # which does not have a Foreign Key.
+                    for column in prop.columns:
+                        if not column.foreign_keys:
+                            break
+                    else:
+                        continue
+            if not include_relationships and hasattr(prop, "direction"):
+                continue
+            field = base_fields.get(key) or self.property2field(prop)
+            if field:
+                result[key] = field
+        return result
+
+    def fields_for_table(
+        self,
+        table: sa.Table,
+        *,
+        include_fk: bool = False,
+        fields: Iterable[str] | None = None,
+        exclude: Iterable[str] | None = None,
+        base_fields: dict | None = None,
+        dict_cls: type[dict] = dict,
+    ) -> dict[str, fields.Field]:
+        result = dict_cls()
+        base_fields = base_fields or {}
+        for column in table.columns:
+            key = self._get_field_name(column)
+            if self._should_exclude_field(column, fields=fields, exclude=exclude):
+                # Allow marshmallow to validate and exclude the field key.
+                result[key] = None
+                continue
+            if not include_fk and column.foreign_keys:
+                continue
+            # Overridden fields are specified relative to key generated by
+            # self._get_key_for_column(...), rather than keys in source model
+            field = base_fields.get(key) or self.column2field(column)
+            if field:
+                result[key] = field
+        return result
+
+    @overload
+    def property2field(
+        self,
+        prop: MapperProperty,
+        *,
+        instance: Literal[True] = ...,
+        field_class: type[fields.Field] | None = ...,
+        **kwargs,
+    ) -> fields.Field: ...
+
+    @overload
+    def property2field(
+        self,
+        prop: MapperProperty,
+        *,
+        instance: Literal[False] = ...,
+        field_class: type[fields.Field] | None = ...,
+        **kwargs,
+    ) -> type[fields.Field]: ...
+
+    def property2field(
+        self,
+        prop: MapperProperty,
+        *,
+        instance: bool = True,
+        field_class: type[fields.Field] | None = None,
+        **kwargs,
+    ) -> fields.Field | type[fields.Field]:
+        """Convert a SQLAlchemy `Property` to a field instance or class.
+
+        :param Property prop: SQLAlchemy Property.
+        :param bool instance: If `True`, return  `Field` instance, computing relevant kwargs
+            from the given property. If `False`, return the `Field` class.
+        :param kwargs: Additional keyword arguments to pass to the field constructor.
+        :return: A `marshmallow.fields.Field` class or instance.
+        """
+        # handle synonyms
+        # Attribute renamed "_proxied_object" in 1.4
+        for attr in ("_proxied_property", "_proxied_object"):
+            proxied_obj = getattr(prop, attr, None)
+            if proxied_obj is not None:
+                prop = proxied_obj
+        field_class = field_class or self._get_field_class_for_property(prop)
+        if not instance:
+            return field_class
+        field_kwargs = self._get_field_kwargs_for_property(prop)
+        field_kwargs.update(kwargs)
+        ret = field_class(**field_kwargs)
+        if (
+            hasattr(prop, "direction")
+            and self.DIRECTION_MAPPING[prop.direction.name]
+            and prop.uselist is True
+        ):
+            ret = RelatedList(ret, **{**self.get_base_kwargs(), **kwargs})
+        return ret
+
+    @overload
+    def column2field(
+        self, column: sa.Column[Any], *, instance: Literal[True] = ..., **kwargs
+    ) -> fields.Field: ...
+
+    @overload
+    def column2field(
+        self, column: sa.Column[Any], *, instance: Literal[False] = ..., **kwargs
+    ) -> type[fields.Field]: ...
+
+    def column2field(
+        self, column: sa.Column[Any], *, instance: bool = True, **kwargs
+    ) -> fields.Field | type[fields.Field]:
+        """Convert a SQLAlchemy `Column <sqlalchemy.schema.Column>` to a field instance or class.
+
         :param sqlalchemy.schema.Column column: SQLAlchemy Column.
         :param bool instance: If `True`, return  `Field` instance, computing relevant kwargs
             from the given property. If `False`, return the `Field` class.
@@ -298,7 +583,7 @@ class ModelConverter:
     @overload
     def field_for(
         self,
-        model: type[DeclarativeMeta],
+        model: type[DeclarativeBase],
         property_name: str,
         *,
         instance: Literal[True] = ...,
@@ -309,7 +594,7 @@ class ModelConverter:
     @overload
     def field_for(
         self,
-        model: type[DeclarativeMeta],
+        model: type[DeclarativeBase],
         property_name: str,
         *,
         instance: Literal[False] = ...,
@@ -319,7 +604,7 @@ class ModelConverter:
 
     def field_for(
         self,
-        model: type[DeclarativeMeta],
+        model: type[DeclarativeBase],
         property_name: str,
         *,
         instance: bool = True,
@@ -360,7 +645,7 @@ class ModelConverter:
     def _get_field_name(self, prop_or_column: PropertyOrColumn) -> str:
         return prop_or_column.key
 
-    def _get_field_class_for_column(self, column: sa.Column) -> type[fields.Field]:
+    def _get_field_class_for_column(self, column: sa.Column[Any]) -> type[fields.Field]:
         return self._get_field_class_for_data_type(column.type)
 
     def _get_field_class_for_data_type(
@@ -396,7 +681,7 @@ class ModelConverter:
                 )
         return cast(type[fields.Field], field_cls)
 
-    def _get_field_class_for_property(self, prop) -> type[fields.Field]:
+    def _get_field_class_for_property(self, prop: MapperProperty) -> type[fields.Field]:
         field_cls: type[fields.Field]
         if hasattr(prop, "direction"):
             field_cls = Related
@@ -417,7 +702,7 @@ class ModelConverter:
             kwargs["metadata"]["description"] = prop.doc
         return kwargs
 
-    def _add_column_kwargs(self, kwargs: dict[str, Any], column: sa.Column) -> None:
+    def _add_column_kwargs(self, kwargs: dict[str, Any], column: sa.Column[Any]) -> None:
         """Add keyword arguments to kwargs (in-place) based on the passed in
         `Column <sqlalchemy.schema.Column>`.
         """

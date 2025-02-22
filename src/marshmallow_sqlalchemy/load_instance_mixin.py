@@ -13,7 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Generic, TypeVar, Union, cast
 
 import marshmallow as ma
-from sqlalchemy.ext.declarative import DeclarativeMeta
+from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import ObjectDeletedError
 
@@ -22,7 +22,7 @@ from .fields import get_primary_keys
 _LoadDataV3 = Union[Mapping[str, Any], Iterable[Mapping[str, Any]]]
 _LoadDataV4 = Union[Mapping[str, Any], Sequence[Mapping[str, Any]]]
 _LoadDataT = TypeVar("_LoadDataT", _LoadDataV3, _LoadDataV4)
-_ModelType = TypeVar("_ModelType", bound=DeclarativeMeta)
+_ModelType = TypeVar("_ModelType", bound=DeclarativeBase)
 
 
 def _cast_data(data):
@@ -33,7 +33,7 @@ def _cast_data(data):
 
 class LoadInstanceMixin:
     class Opts:
-        model: type[DeclarativeMeta] | None
+        model: type[DeclarativeBase] | None
         sqla_session: Session | None
         load_instance: bool
         transient: bool
@@ -114,7 +114,7 @@ class LoadInstanceMixin:
                     setattr(instance, key, value)
                 return instance
             kwargs, association_attrs = self._split_model_kwargs_association(data)
-            ModelClass = cast(DeclarativeMeta, self.opts.model)
+            ModelClass = cast(DeclarativeBase, self.opts.model)
             instance = ModelClass(**kwargs)
             for attr, value in association_attrs.items():
                 setattr(instance, attr, value)
