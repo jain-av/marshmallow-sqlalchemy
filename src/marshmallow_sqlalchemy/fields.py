@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING, Any, cast
 from marshmallow import fields
 from marshmallow.utils import is_iterable_but_not_string
 from sqlalchemy import inspect
-from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.exc import NoResultFound
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.declarative import DeclarativeMeta
     from sqlalchemy.orm import MapperProperty
+    from sqlalchemy.orm import Session
 
 
 class RelatedList(fields.List):
@@ -79,7 +80,7 @@ class Related(fields.Field):
         return get_primary_keys(self.related_model)
 
     @property
-    def session(self):
+    def session(self) -> Session:
         return self.root.session
 
     @property
@@ -130,11 +131,8 @@ class Related(fields.Field):
         else:
             # Use a faster path if the related key is the primary key.
             lookup_values = [value.get(prop.key) for prop in self.related_keys]
-            try:
-                result = self.session.get(related_model, lookup_values)
-            except TypeError as error:
-                keys = [prop.key for prop in self.related_keys]
-                raise self.make_error("invalid", value=value, keys=keys) from error
+            # use session.get
+            result = self.session.get(related_model, lookup_values)
             if result is None:
                 raise NoResultFound
         return result
