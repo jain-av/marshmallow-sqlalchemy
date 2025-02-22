@@ -9,21 +9,15 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.orm import (
-    DeclarativeMeta,
+    DeclarativeBase,
     Mapped,
     backref,
     column_property,
-    declarative_base,
     relationship,
     sessionmaker,
     synonym,
 )
-
-mapped_column: Any
-try:
-    from sqlalchemy.orm import mapped_column
-except ImportError:  # compat with sqlalchemy<2
-    mapped_column = sa.Column
+from sqlalchemy.orm import mapped_column
 
 
 class AnotherInteger(sa.Integer):
@@ -37,8 +31,11 @@ class AnotherText(sa.types.TypeDecorator):
 
 
 @pytest.fixture
-def Base() -> type:
-    return declarative_base()
+def Base() -> type[DeclarativeBase]:
+    class Base(DeclarativeBase):
+        pass
+
+    return Base
 
 
 @pytest.fixture
@@ -51,7 +48,7 @@ def engine():
 @pytest.fixture
 def session(Base, models, engine):
     Session = sessionmaker(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(engine)
     with Session() as session:
         yield session
 
@@ -61,24 +58,24 @@ CourseLevel = Enum("CourseLevel", "PRIMARY SECONDARY")
 
 @dataclass
 class Models:
-    Course: type[DeclarativeMeta]
-    School: type[DeclarativeMeta]
-    Student: type[DeclarativeMeta]
-    Teacher: type[DeclarativeMeta]
-    SubstituteTeacher: type[DeclarativeMeta]
-    Paper: type[DeclarativeMeta]
-    GradedPaper: type[DeclarativeMeta]
-    Seminar: type[DeclarativeMeta]
-    Lecture: type[DeclarativeMeta]
-    Keyword: type[DeclarativeMeta]
+    Course: type
+    School: type
+    Student: type
+    Teacher: type
+    SubstituteTeacher: type
+    Paper: type
+    GradedPaper: type
+    Seminar: type
+    Lecture: type
+    Keyword: type
 
 
 @pytest.fixture
-def models(Base: type) -> Models:
+def models(Base: type[DeclarativeBase]) -> Models:
     # models adapted from https://github.com/wtforms/wtforms-sqlalchemy/blob/master/tests/tests.py
     student_course = sa.Table(
         "student_course",
-        Base.metadata,  # type: ignore[attr-defined]
+        Base.metadata,
         sa.Column("student_id", sa.Integer, sa.ForeignKey("student.id")),
         sa.Column("course_id", sa.Integer, sa.ForeignKey("course.id")),
     )
@@ -103,8 +100,8 @@ def models(Base: type) -> Models:
 
     class School(Base):
         __tablename__ = "school"
-        id = sa.Column("school_id", sa.Integer, primary_key=True)
-        name = sa.Column(sa.String(255), nullable=False)
+        id: Mapped[int] = mapped_column("school_id", sa.Integer, primary_key=True)
+        name: Mapped[str] = mapped_column(sa.String(255), nullable=False)
 
         student_ids = association_proxy(
             "students", "id", creator=lambda sid: Student(id=sid)
@@ -116,23 +113,20 @@ def models(Base: type) -> Models:
 
     class Student(Base):
         __tablename__ = "student"
-        id = sa.Column(sa.Integer, primary_key=True)
-        full_name = sa.Column(sa.String(255), nullable=False, unique=True)
-        dob = sa.Column(sa.Date(), nullable=True)
-        date_created = sa.Column(
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+        full_name: Mapped[str] = mapped_column(sa.String(255), nullable=False, unique=True)
+        dob: Mapped[dt.date | None] = mapped_column(sa.Date(), nullable=True)
+        date_created: Mapped[dt.datetime] = mapped_column(
             sa.DateTime,
             default=lambda: dt.datetime.now(dt.timezone.utc),
             doc="date the student was created",
         )
 
-        current_school_id = sa.Column(
-            sa.Integer, sa.ForeignKey(School.id), nullable=False
-        )
-        current_school = relationship(School, backref=backref("students"))
+        current_school_id: Mapped[int] = mapped_column(sa.Integer, sa.ForeignKey(School.id), nullable=False)
+        current_school: Mapped[School] = relationship(School, backref=backref("students"))
         possible_teachers = association_proxy("current_school", "teachers")
 
-        courses = relationship(
-            Course,
+        courses: Mapped[list[Course]] = relationship(
             secondary=student_course,
             backref=backref("students", lazy="dynamic"),
         )
@@ -150,21 +144,21 @@ def models(Base: type) -> Models:
 
     class Teacher(Base):
         __tablename__ = "teacher"
-        id = sa.Column(sa.Integer, primary_key=True)
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
 
-        full_name = sa.Column(
+        full_name: Mapped[str] = mapped_column(
             sa.String(255), nullable=False, unique=True, default="Mr. Noname"
         )
 
-        current_school_id = sa.Column(
+        current_school_id: Mapped[int | None] = mapped_column(
             sa.Integer, sa.ForeignKey(School.id), nullable=True
         )
-        current_school = relationship(School, backref=backref("teachers"))
+        current_school: Mapped[School | None] = relationship(School, backref=backref("teachers"))
         curr_school_id = synonym("current_school_id")
 
-        substitute = relationship("SubstituteTeacher", uselist=False, backref="teacher")
+        substitute: Mapped[SubstituteTeacher | None] = relationship("SubstituteTeacher", uselist=False, backref="teacher")
 
-        data = sa.Column(sa.PickleType)
+        data: Mapped[Any] = mapped_column(sa.PickleType)
 
         @property
         def fname(self):
@@ -172,37 +166,37 @@ def models(Base: type) -> Models:
 
     class SubstituteTeacher(Base):
         __tablename__ = "substituteteacher"
-        id = sa.Column(sa.Integer, sa.ForeignKey("teacher.id"), primary_key=True)
+        id: Mapped[int] = mapped_column(sa.Integer, sa.ForeignKey("teacher.id"), primary_key=True)
 
     class Paper(Base):
         __tablename__ = "paper"
 
-        satype = sa.Column(sa.String(50))
+        satype: Mapped[str] = mapped_column(sa.String(50))
         __mapper_args__ = {"polymorphic_identity": "paper", "polymorphic_on": satype}
 
-        id = sa.Column(sa.Integer, primary_key=True)
-        name = sa.Column(sa.String, nullable=False, unique=True)
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+        name: Mapped[str] = mapped_column(sa.String, nullable=False, unique=True)
 
     class GradedPaper(Paper):
         __tablename__ = "gradedpaper"
 
         __mapper_args__ = {"polymorphic_identity": "gradedpaper"}
 
-        id = sa.Column(sa.Integer, sa.ForeignKey("paper.id"), primary_key=True)
+        id: Mapped[int] = mapped_column(sa.Integer, sa.ForeignKey("paper.id"), primary_key=True)
 
-        marks_available = sa.Column(sa.Integer)
+        marks_available: Mapped[int] = mapped_column(sa.Integer)
 
     class Seminar(Base):
         __tablename__ = "seminar"
 
-        title = sa.Column(sa.String, primary_key=True)
-        semester = sa.Column(sa.String, primary_key=True)
+        title: Mapped[str] = mapped_column(sa.String, primary_key=True)
+        semester: Mapped[str] = mapped_column(sa.String, primary_key=True)
 
         label = column_property(title + ": " + semester)
 
     lecturekeywords_table = sa.Table(
         "lecturekeywords",
-        Base.metadata,  # type: ignore[attr-defined]
+        Base.metadata,
         sa.Column("keyword_id", sa.Integer, sa.ForeignKey("keyword.id")),
         sa.Column("lecture_id", sa.Integer, sa.ForeignKey("lecture.id")),
     )
@@ -210,8 +204,8 @@ def models(Base: type) -> Models:
     class Keyword(Base):
         __tablename__ = "keyword"
 
-        id = sa.Column(sa.Integer, primary_key=True)
-        keyword = sa.Column(sa.String)
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+        keyword: Mapped[str] = mapped_column(sa.String)
 
     class Lecture(Base):
         __tablename__ = "lecture"
@@ -222,14 +216,14 @@ def models(Base: type) -> Models:
             ),
         )
 
-        id = sa.Column(sa.Integer, primary_key=True)
-        topic = sa.Column(sa.String)
-        seminar_title = sa.Column(sa.String, sa.ForeignKey(Seminar.title))
-        seminar_semester = sa.Column(sa.String, sa.ForeignKey(Seminar.semester))
-        seminar = relationship(
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+        topic: Mapped[str] = mapped_column(sa.String)
+        seminar_title: Mapped[str] = mapped_column(sa.String, sa.ForeignKey(Seminar.title))
+        seminar_semester: Mapped[str] = mapped_column(sa.String, sa.ForeignKey(Seminar.semester))
+        seminar: Mapped[Seminar] = relationship(
             Seminar, foreign_keys=[seminar_title, seminar_semester], backref="lectures"
         )
-        kw = relationship("Keyword", secondary=lecturekeywords_table)
+        kw: Mapped[list[Keyword]] = relationship("Keyword", secondary=lecturekeywords_table)
         keywords = association_proxy(
             "kw", "keyword", creator=lambda kw: Keyword(keyword=kw)
         )

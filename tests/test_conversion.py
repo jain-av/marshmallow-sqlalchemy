@@ -8,7 +8,8 @@ import sqlalchemy as sa
 from marshmallow import Schema, fields, validate
 from sqlalchemy import Integer, String
 from sqlalchemy.dialects import mysql, postgresql
-from sqlalchemy.orm import Mapped, Session, column_property
+from sqlalchemy.orm import Session, Mapped, mapped_column
+from sqlalchemy.orm import column_property
 
 from marshmallow_sqlalchemy import (
     ModelConversionError,
@@ -20,7 +21,7 @@ from marshmallow_sqlalchemy import (
 )
 from marshmallow_sqlalchemy.fields import Related, RelatedList
 
-from .conftest import CourseLevel, mapped_column
+from .conftest import CourseLevel
 
 
 def contains_validator(field, v_type):
@@ -256,14 +257,17 @@ class TestPropertyFieldConversion:
     def test_convert_multidimensional_ARRAY(self, converter, array_property):
         field = converter.property2field(array_property)
         assert type(field) is fields.List
-        assert type(field.inner) is fields.List
-        assert type(field.inner.inner) is fields.Float
+        inner_field = getattr(field, "inner", getattr(field, "container", None))
+        assert type(inner_field) is fields.List
+        inner_inner_field = getattr(inner_field, "inner", getattr(inner_field, "container", None))
+        assert type(inner_inner_field) is fields.Float
 
     def test_convert_one_dimensional_ARRAY(self, converter):
         prop = make_property(postgresql.ARRAY(sa.Float, dimensions=1))
         field = converter.property2field(prop)
         assert type(field) is fields.List
-        assert type(field.inner) is fields.Float
+        inner_field = getattr(field, "inner", getattr(field, "container", None))
+        assert type(inner_field) is fields.Float
 
     def test_convert_TSVECTOR(self, converter):
         prop = make_property(postgresql.TSVECTOR)
@@ -403,4 +407,6 @@ class TestFieldFor:
 
         field = field_for(ModelWithArray, "bar", dump_only=True)
         assert type(field) is fields.List
+        inner_field = getattr(field, "inner", getattr(field, "container", None))
+        assert type(inner_field) is fields.Str
         assert field.dump_only is True
