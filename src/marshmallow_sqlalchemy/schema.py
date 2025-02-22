@@ -12,7 +12,8 @@ from .exceptions import IncorrectSchemaTypeError
 from .load_instance_mixin import LoadInstanceMixin, _ModelType
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.declarative import DeclarativeMeta
+    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.orm import Mapped
 
 
 # This isn't really a field; it's a placeholder for the metaclass.
@@ -22,7 +23,7 @@ class SQLAlchemyAutoField(Field):
         self,
         *,
         column_name: str | None = None,
-        model: type[DeclarativeMeta] | None = None,
+        model: type[DeclarativeBase] | None = None,
         table: sa.Table | None = None,
         field_kwargs: dict[str, Any],
     ):
@@ -283,7 +284,7 @@ class SQLAlchemyAutoSchema(
 def auto_field(
     column_name: str | None = None,
     *,
-    model: type[DeclarativeMeta] | None = None,
+    model: type[DeclarativeBase] | None = None,
     table: sa.Table | None = None,
     # TODO: add type annotations for **kwargs
     **kwargs,

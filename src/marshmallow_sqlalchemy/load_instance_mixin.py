@@ -28,7 +28,7 @@ _ModelType = TypeVar("_ModelType", bound=DeclarativeMeta)
 def _cast_data(data):
     if int(importlib.metadata.version("marshmallow")[0]) >= 4:
         return cast(_LoadDataV4, data)
-    return cast(_LoadDataV3, data)
+    return cast(_LoadDataV4, data)
 
 
 class LoadInstanceMixin:

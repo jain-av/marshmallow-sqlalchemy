@@ -1,12 +1,12 @@
-from .convert import (
+from marshmallow_sqlalchemy.convert import (
     ModelConverter,
     column2field,
     field_for,
     fields_for_model,
     property2field,
 )
-from .exceptions import ModelConversionError
-from .schema import (
+from marshmallow_sqlalchemy.exceptions import ModelConversionError
+from marshmallow_sqlalchemy.schema import (
     SQLAlchemyAutoSchema,
     SQLAlchemyAutoSchemaOpts,
     SQLAlchemySchema,
