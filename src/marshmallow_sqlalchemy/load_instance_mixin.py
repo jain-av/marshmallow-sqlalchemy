@@ -13,9 +13,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Generic, TypeVar, Union, cast
 
 import marshmallow as ma
-from sqlalchemy.ext.declarative import DeclarativeMeta
+from sqlalchemy.orm import DeclarativeMeta
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import ObjectDeletedError
+from sqlalchemy.orm import selectinload
 
 from .fields import get_primary_keys
 
@@ -92,7 +93,8 @@ class LoadInstanceMixin:
             filters = {prop.key: data.get(prop.key) for prop in props}
             if None not in filters.values():
                 try:
-                    return cast(Session, self.session).get(model, filters)
+                    primary_key_values = tuple(filters.values())
+                    return cast(Session, self.session).get(model, primary_key_values)
                 except ObjectDeletedError:
                     return None
             return None
