@@ -31,7 +31,7 @@ from .fields import Related, RelatedList
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from sqlalchemy.ext.declarative import DeclarativeMeta
+    from sqlalchemy.orm import DeclarativeBase
     from sqlalchemy.orm import MapperProperty
     from sqlalchemy.types import TypeEngine
 
@@ -141,7 +141,7 @@ class ModelConverter:
 
     def fields_for_model(
         self,
-        model: type[DeclarativeMeta],
+        model: type[DeclarativeBase],
         *,
         include_fk: bool = False,
         include_relationships: bool = False,
@@ -344,7 +344,7 @@ class ModelConverter:
         if hasattr(attr, "remote_attr"):
             target_model = attr.target_class
             prop_name = attr.value_attr
-            remote_with_local_multiplicity = attr.local_attr.prop.uselist
+            remote_with_local_multiplicity = attr.local_attr.property.uselist  # Changed from prop to property
         prop: MapperProperty = sa.inspect(target_model).attrs.get(prop_name)  # type: ignore[union-attr]
         converted_prop = self.property2field(
             prop,

@@ -12,7 +12,7 @@ from .exceptions import IncorrectSchemaTypeError
 from .load_instance_mixin import LoadInstanceMixin, _ModelType
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.declarative import DeclarativeMeta
+    from sqlalchemy.orm import DeclarativeMeta
 
 
 # This isn't really a field; it's a placeholder for the metaclass.

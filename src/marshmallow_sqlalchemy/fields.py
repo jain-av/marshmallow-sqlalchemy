@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from marshmallow import fields
 from marshmallow.utils import is_iterable_but_not_string
 from sqlalchemy import inspect
-from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.orm import exc
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.declarative import DeclarativeMeta
@@ -106,7 +106,7 @@ class Related(fields.Field):
             return self.related_model(**value)
         try:
             result = self._get_existing_instance(self.related_model, value)
-        except NoResultFound:
+        except exc.NoResultFound:
             # The related-object DNE in the DB, but we still want to deserialize it
             # ...perhaps we want to add it to the DB later
             return self.related_model(**value)
@@ -136,7 +136,7 @@ class Related(fields.Field):
                 keys = [prop.key for prop in self.related_keys]
                 raise self.make_error("invalid", value=value, keys=keys) from error
             if result is None:
-                raise NoResultFound
+                raise exc.NoResultFound
         return result
 
 
