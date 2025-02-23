@@ -17,7 +17,7 @@ default_role = "py:obj"
 intersphinx_mapping = {
     "python": ("https://python.readthedocs.io/en/latest/", None),
     "marshmallow": ("https://marshmallow.readthedocs.io/en/latest/", None),
-    "sqlalchemy": ("http://www.sqlalchemy.org/docs/", None),
+    "sqlalchemy": ("https://docs.sqlalchemy.org/", None),
 }
 
 issues_github_path = "marshmallow-code/marshmallow-sqlalchemy"
