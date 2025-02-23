@@ -241,6 +241,160 @@ class TestPropertyFieldConversion:
         inner_field = field.inner
         assert type(inner_field) is fields.Enum
 
+import datetime as dt
+import decimal
+import uuid
+from typing import cast
+
+import pytest
+import sqlalchemy as sa
+from marshmallow import Schema, fields, validate
+from sqlalchemy import Integer, String
+from sqlalchemy.dialects import mysql, postgresql
+from sqlalchemy.orm import Mapped, Session, column_property
+
+from marshmallow_sqlalchemy import (
+    ModelConversionError,
+    ModelConverter,
+    column2field,
+    field_for,
+    fields_for_model,
+    property2field,
+)
+from marshmallow_sqlalchemy.fields import Related, RelatedList
+
+from .conftest import CourseLevel, mapped_column
+
+
+def contains_validator(field, v_type):
+    for v in field.validators:
+        if isinstance(v, v_type):
+            return v
+    return False
+
+
+class TestModelFieldConversion:
+    def test_fields_for_model_types(self, models):
+        fields_ = fields_for_model(models.Student, include_fk=True)
+        assert type(fields_["id"]) is fields.Int
+        assert type(fields_["full_name"]) is fields.Str
+        assert type(fields_["dob"]) is fields.Date
+        assert type(fields_["current_school_id"]) is fields.Int
+        assert type(fields_["date_created"]) is fields.DateTime
+
+    def test_fields_for_model_handles_exclude(self, models):
+        fields_ = fields_for_model(models.Student, exclude=("dob",))
+        assert type(fields_["id"]) is fields.Int
+        assert type(fields_["full_name"]) is fields.Str
+        assert fields_["dob"] is None
+
+    def test_fields_for_model_handles_custom_types(self, models):
+        fields_ = fields_for_model(models.Course, include_fk=True)
+        assert type(fields_["grade"]) is fields.Int
+        assert type(fields_["transcription"]) is fields.Str
+
+    def test_fields_for_model_saves_doc(self, models):
+        fields_ = fields_for_model(models.Student, include_fk=True)
+        assert (
+            fields_["date_created"].metadata["description"]
+            == "date the student was created"
+        )
+
+    def test_length_validator_set(self, models):
+        fields_ = fields_for_model(models.Student)
+        validator = contains_validator(fields_["full_name"], validate.Length)
+        assert validator
+        assert validator.max == 255
+
+    def test_none_length_validator_not_set(self, models):
+        fields_ = fields_for_model(models.Course)
+        assert not contains_validator(fields_["transcription"], validate.Length)
+
+    def test_sets_allow_none_for_nullable_fields(self, models):
+        fields_ = fields_for_model(models.Student)
+        assert fields_["dob"].allow_none is True
+
+    def test_enum_with_choices_converted_to_field_with_validator(self, models):
+        fields_ = fields_for_model(models.Course)
+        validator = contains_validator(fields_["level"], validate.OneOf)
+        assert validator
+        assert list(validator.choices) == ["Primary", "Secondary"]
+
+    def test_enum_with_class_converted_to_enum_field(self, models):
+        fields_ = fields_for_model(models.Course)
+        field = fields_["level_with_enum_class"]
+        assert type(field) is fields.Enum
+        assert contains_validator(field, validate.OneOf) is False
+        assert field.enum is CourseLevel
+
+    def test_many_to_many_relationship(self, models):
+        student_fields = fields_for_model(models.Student, include_relationships=True)
+        courses_field = student_fields["courses"]
+        assert type(courses_field) is RelatedList
+        assert courses_field.required is False
+
+        course_fields = fields_for_model(models.Course, include_relationships=True)
+        students_field = course_fields["students"]
+        assert type(students_field) is RelatedList
+        assert students_field.required is False
+
+    def test_many_to_one_relationship(self, models):
+        student_fields = fields_for_model(models.Student, include_relationships=True)
+        current_school_field = student_fields["current_school"]
+        assert type(current_school_field) is Related
+        assert current_school_field.allow_none is False
+        assert current_school_field.required is True
+
+        school_fields = fields_for_model(models.School, include_relationships=True)
+        assert type(school_fields["students"]) is RelatedList
+
+        teacher_fields = fields_for_model(models.Teacher, include_relationships=True)
+        current_school_field = teacher_fields["current_school"]
+        assert type(current_school_field) is Related
+        assert current_school_field.required is False
+
+    def test_many_to_many_uselist_false_relationship(self, models):
+        teacher_fields = fields_for_model(models.Teacher, include_relationships=True)
+        substitute_field = teacher_fields["substitute"]
+        assert type(substitute_field) is Related
+        assert substitute_field.required is False
+
+    def test_include_fk(self, models):
+        student_fields = fields_for_model(models.Student, include_fk=False)
+        assert "current_school_id" not in student_fields
+
+        student_fields2 = fields_for_model(models.Student, include_fk=True)
+        assert "current_school_id" in student_fields2
+
+    def test_overridden_with_fk(self, models):
+        graded_paper_fields = fields_for_model(models.GradedPaper, include_fk=False)
+        assert "id" in graded_paper_fields
+
+    def test_rename_key(self, models):
+        class RenameConverter(ModelConverter):
+            def _get_field_name(self, prop):
+                if prop.key == "name":
+                    return "title"
+                return prop.key
+
+        converter = RenameConverter()
+        fields = converter.fields_for_model(models.Paper)
+        assert "title" in fields
+        assert "name" not in fields
+
+    def test_subquery_proxies(self, session: Session, Base: type, models):
+        # Model from a subquery, columns are proxied.
+        # https://github.com/marshmallow-code/marshmallow-sqlalchemy/issues/383
+        first_graders = session.query(models.Student).filter(
+            models.Student.courses.any(models.Course.grade == 1)
+        )
+
+        class FirstGradeStudent(Base):
+            __table__ = first_graders.subquery("first_graders")
+
+        fields_ = fields_for_model(FirstGradeStudent)
+        assert fields_["dob"].allow_none is True
+
     @pytest.mark.parametrize(
         "array_property",
         (
