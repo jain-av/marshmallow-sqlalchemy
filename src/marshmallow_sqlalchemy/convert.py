@@ -1,3 +1,53 @@
+"""Type conversion system for mapping SQLAlchemy types to marshmallow fields.
+
+This module provides the core type conversion functionality that powers automatic
+field generation in marshmallow-sqlalchemy. The :class:`ModelConverter` class is
+responsible for converting SQLAlchemy models and tables into dictionaries of
+marshmallow fields.
+
+**Key Components:**
+
+- :class:`ModelConverter` - Main converter class for type mapping and field generation
+- :func:`field_for` - Convenience function to generate a field for a specific model property
+- :func:`column2field` - Convert a SQLAlchemy Column to a marshmallow field
+- :func:`property2field` - Convert a SQLAlchemy property to a marshmallow field
+
+**Type Mapping:**
+
+The module uses a two-tier type mapping system:
+
+1. **SQLA_TYPE_MAPPING**: Database-specific types (PostgreSQL UUID, MySQL YEAR, etc.)
+2. **TYPE_MAPPING**: Standard Python types inherited from marshmallow (int, str, datetime, etc.)
+
+**Custom Converters:**
+
+You can create custom converters by subclassing :class:`ModelConverter` and customizing
+the type mapping or conversion logic.
+
+Example::
+
+    from marshmallow_sqlalchemy import ModelConverter, SQLAlchemyAutoSchema
+    from marshmallow import fields
+    import sqlalchemy as sa
+
+
+    class CustomConverter(ModelConverter):
+        SQLA_TYPE_MAPPING = {
+            **ModelConverter.SQLA_TYPE_MAPPING,
+            sa.LargeBinary: fields.String,  # Treat binary as base64
+        }
+
+
+    class MySchema(SQLAlchemyAutoSchema):
+        class Meta:
+            model = MyModel
+            model_converter = CustomConverter
+
+.. seealso::
+    - :class:`~marshmallow_sqlalchemy.schema.SQLAlchemySchema`
+    - :class:`~marshmallow_sqlalchemy.schema.SQLAlchemyAutoSchema`
+"""
+
 from __future__ import annotations
 
 import functools
@@ -45,11 +95,27 @@ _FieldClassFactory: TypeAlias = Callable[
 
 
 def _is_field(value: Any) -> TypeGuard[type[fields.Field]]:
+    """Check if a value is a marshmallow Field class (not an instance).
+
+    This type guard function is used internally to distinguish between Field classes
+    and factory functions in the SQLA_TYPE_MAPPING dictionary.
+
+    :param value: The value to check.
+    :return: True if value is a Field class, False otherwise.
+    """
     return isinstance(value, type) and issubclass(value, fields.Field)
 
 
 def _base_column(column):
-    """Unwrap proxied columns"""
+    """Unwrap proxied SQLAlchemy columns to get the underlying base column.
+
+    SQLAlchemy sometimes wraps columns in proxies (e.g., in hybrid properties or
+    association proxies). This function extracts the actual base column when there
+    is exactly one base column that differs from the proxied column.
+
+    :param column: A SQLAlchemy Column or column-like object.
+    :return: The unwrapped base column, or the original column if no unwrapping is needed.
+    """
     if column not in column.base_columns and len(column.base_columns) == 1:
         [base] = column.base_columns
         return base
@@ -57,6 +123,19 @@ def _base_column(column):
 
 
 def _has_default(column) -> bool:
+    """Check if a SQLAlchemy column has a default value.
+
+    A column is considered to have a default if it has any of:
+    - A client-side default value (column.default)
+    - A server-side default value (column.server_default)
+    - Auto-increment behavior (for primary keys)
+
+    This is used to determine if a field should be marked as required during
+    deserialization. Columns with defaults are typically not required.
+
+    :param column: A SQLAlchemy Column object.
+    :return: True if the column has any form of default value, False otherwise.
+    """
     return (
         column.default is not None
         or column.server_default is not None
@@ -65,12 +144,42 @@ def _has_default(column) -> bool:
 
 
 def _is_auto_increment(column) -> bool:
+    """Check if a SQLAlchemy column is the auto-increment column for its table.
+
+    Auto-increment columns (typically integer primary keys) automatically generate
+    values when new rows are inserted, so they shouldn't be required during
+    deserialization.
+
+    :param column: A SQLAlchemy Column object.
+    :return: True if the column is the table's auto-increment column, False otherwise.
+    """
     return column.table is not None and column is column.table._autoincrement_column
 
 
 def _list_field_factory(
     converter: ModelConverter, data_type: postgresql.ARRAY
 ) -> Callable[[], fields.List]:
+    """Create a marshmallow List field factory for PostgreSQL ARRAY columns.
+
+    This factory function generates an appropriate List field for PostgreSQL arrays,
+    handling both single-dimensional and multi-dimensional arrays. The inner field
+    type is determined by the array's item type.
+
+    For multi-dimensional arrays (e.g., INTEGER[][]), this creates nested List fields
+    to match the array dimensions.
+
+    :param converter: ModelConverter instance used to determine the field class for array items.
+    :param data_type: PostgreSQL ARRAY type containing item type and dimensions information.
+    :return: A partial function that creates a configured List field when called.
+
+    Example::
+
+        # For INTEGER[] (1D array)
+        # Returns: partial(fields.List, fields.Integer())
+
+        # For INTEGER[][] (2D array)
+        # Returns: partial(fields.List, fields.List(fields.Integer()))
+    """
     FieldClass = converter._get_field_class_for_data_type(data_type.item_type)
     inner = FieldClass()
     if not data_type.dimensions or data_type.dimensions == 1:
@@ -87,6 +196,24 @@ def _list_field_factory(
 def _enum_field_factory(
     converter: ModelConverter, data_type: sa.Enum
 ) -> Callable[[], fields.Field]:
+    """Create an appropriate marshmallow field factory for SQLAlchemy Enum columns.
+
+    This factory determines whether to use a marshmallow Enum field (when the SQLAlchemy
+    Enum has an associated Python enum class) or fall back to a Raw field (for string-based
+    enums without an enum class).
+
+    :param converter: ModelConverter instance (unused but required for factory signature).
+    :param data_type: SQLAlchemy Enum type that may contain an enum_class attribute.
+    :return: A partial function for Enum field creation, or the Raw field class.
+
+    Example::
+
+        # For sa.Enum(MyEnum) where MyEnum is a Python enum
+        # Returns: partial(fields.Enum, enum=MyEnum)
+
+        # For sa.Enum('open', 'closed') without enum_class
+        # Returns: fields.Raw
+    """
     return (
         functools.partial(fields.Enum, enum=data_type.enum_class)
         if data_type.enum_class
@@ -95,8 +222,60 @@ def _enum_field_factory(
 
 
 class ModelConverter:
-    """Converts a SQLAlchemy model into a dictionary of corresponding
-    marshmallow `Fields <marshmallow.fields.Field>`.
+    """Converts SQLAlchemy models and tables into marshmallow field dictionaries.
+
+    The ModelConverter is responsible for the core type conversion logic in
+    marshmallow-sqlalchemy. It maps SQLAlchemy column types to appropriate marshmallow
+    field types and handles field configuration based on column properties.
+
+    **Key Responsibilities:**
+
+    - Convert SQLAlchemy columns to marshmallow fields
+    - Map SQLAlchemy types to marshmallow field classes via SQLA_TYPE_MAPPING
+    - Generate field kwargs based on column properties (nullable, default, length, etc.)
+    - Handle relationships and foreign keys
+    - Support custom type converters through subclassing
+
+    **Type Mapping:**
+
+    The converter uses two mapping dictionaries:
+
+    1. ``SQLA_TYPE_MAPPING``: Maps SQLAlchemy-specific types (e.g., postgresql.UUID,
+       mysql.YEAR) to marshmallow fields or factory functions.
+    2. ``type_mapping``: Falls back to marshmallow's base TYPE_MAPPING for standard
+       Python types (int -> Integer, str -> String, etc.).
+
+    **Customization:**
+
+    You can create a custom converter by subclassing and modifying the SQLA_TYPE_MAPPING
+    or overriding conversion methods:
+
+    Example::
+
+        from marshmallow_sqlalchemy import ModelConverter
+        from marshmallow import fields
+        import sqlalchemy as sa
+
+
+        class CustomConverter(ModelConverter):
+            # Add custom type mapping
+            SQLA_TYPE_MAPPING = {
+                **ModelConverter.SQLA_TYPE_MAPPING,
+                sa.LargeBinary: fields.String,  # Convert binary to base64 string
+            }
+
+
+        class MySchema(SQLAlchemyAutoSchema):
+            class Meta:
+                model = MyModel
+                model_converter = CustomConverter
+
+    :param schema_cls: Optional schema class to use for accessing custom TYPE_MAPPING.
+
+    .. seealso::
+        - :class:`SQLAlchemySchema` - Uses ModelConverter for field generation
+        - :class:`SQLAlchemyAutoSchema` - Automatically generates all fields via converter
+        - :func:`field_for` - Convenience function using default converter
     """
 
     SQLA_TYPE_MAPPING: dict[
@@ -150,13 +329,28 @@ class ModelConverter:
         base_fields: dict | None = None,
         dict_cls: type[dict] = dict,
     ) -> dict[str, fields.Field]:
-        """Generate a dict of field_name: `marshmallow.fields.Field` pairs for the given model.
-        Note: SynonymProperties are ignored. Use an explicit field if you want to include a synonym.
+        """Generate marshmallow fields for all properties of a SQLAlchemy model.
 
-        :param model: The SQLAlchemy model
-        :param bool include_fk: Whether to include foreign key fields in the output.
-        :param bool include_relationships: Whether to include relationships fields in the output.
-        :return: dict of field_name: Field instance pairs
+        This method iterates through all mapped properties of the model (columns and
+        relationships) and generates appropriate marshmallow fields for each one,
+        respecting the inclusion/exclusion parameters.
+
+        .. note::
+            SynonymProperties are always ignored. If you need a field for a synonym,
+            declare it explicitly in your schema.
+
+        :param model: SQLAlchemy model class to generate fields from.
+        :param include_fk: Whether to include foreign key columns as fields.
+            Defaults to False.
+        :param include_relationships: Whether to include relationship properties as fields.
+            Defaults to False.
+        :param fields: Optional whitelist of field names to include. If provided, only
+            these fields will be generated.
+        :param exclude: Optional blacklist of field names to exclude from generation.
+        :param base_fields: Dictionary of explicitly declared fields that should not be
+            auto-generated. If a field name appears here, it will be used as-is.
+        :param dict_cls: Dictionary class to use for the returned mapping. Defaults to dict.
+        :return: Dictionary mapping field names to marshmallow Field instances.
         """
         result = dict_cls()
         base_fields = base_fields or {}
@@ -195,6 +389,26 @@ class ModelConverter:
         base_fields: dict | None = None,
         dict_cls: type[dict] = dict,
     ) -> dict[str, fields.Field]:
+        """Generate marshmallow fields for all columns of a SQLAlchemy Table.
+
+        This method iterates through all columns of the table and generates appropriate
+        marshmallow fields for each one, respecting the inclusion/exclusion parameters.
+
+        .. note::
+            Unlike :meth:`fields_for_model`, this method cannot include relationships
+            since Table objects don't have relationship definitions (use models for that).
+
+        :param table: SQLAlchemy Table object to generate fields from.
+        :param include_fk: Whether to include foreign key columns as fields.
+            Defaults to False.
+        :param fields: Optional whitelist of field names to include. If provided, only
+            these fields will be generated.
+        :param exclude: Optional blacklist of field names to exclude from generation.
+        :param base_fields: Dictionary of explicitly declared fields that should not be
+            auto-generated. If a field name appears here, it will be used as-is.
+        :param dict_cls: Dictionary class to use for the returned mapping. Defaults to dict.
+        :return: Dictionary mapping field names to marshmallow Field instances.
+        """
         result = dict_cls()
         base_fields = base_fields or {}
         for column in table.columns:
@@ -366,6 +580,20 @@ class ModelConverter:
     def _get_field_class_for_data_type(
         self, data_type: TypeEngine
     ) -> type[fields.Field]:
+        """Determine the marshmallow field class for a SQLAlchemy data type.
+
+        This method implements the core type conversion logic. It searches for an appropriate
+        marshmallow field class in this order:
+
+        1. Check SQLA_TYPE_MAPPING for SQLAlchemy-specific types (using MRO)
+        2. Fall back to type_mapping using the column's python_type
+        3. Recursively check data_type.impl for wrapped types
+        4. Raise ModelConversionError if no mapping found
+
+        :param data_type: SQLAlchemy TypeEngine instance (e.g., Integer, String, UUID).
+        :return: Marshmallow Field class appropriate for the data type.
+        :raises ModelConversionError: If no field mapping can be found for the type.
+        """
         field_cls: type[fields.Field] | _FieldPartial | None = None
         types = inspect.getmro(type(data_type))
         # First search for a field class from self.SQLA_TYPE_MAPPING
@@ -397,6 +625,14 @@ class ModelConverter:
         return cast(type[fields.Field], field_cls)
 
     def _get_field_class_for_property(self, prop) -> type[fields.Field]:
+        """Determine the marshmallow field class for a SQLAlchemy property.
+
+        Properties can be either column-based (regular columns) or relationship-based.
+        This method distinguishes between them and returns the appropriate field class.
+
+        :param prop: SQLAlchemy MapperProperty (ColumnProperty or RelationshipProperty).
+        :return: Related field for relationships, or column-appropriate field for columns.
+        """
         field_cls: type[fields.Field]
         if hasattr(prop, "direction"):
             field_cls = Related
@@ -474,6 +710,18 @@ class ModelConverter:
         fields: Iterable[str] | None = None,
         exclude: Iterable[str] | None = None,
     ) -> bool:
+        """Determine if a field should be excluded from schema generation.
+
+        A field is excluded if:
+        - A whitelist (fields) is provided and the field is not in it, OR
+        - A blacklist (exclude) is provided and the field is in it
+
+        :param column: SQLAlchemy property or column to check.
+        :param fields: Optional whitelist of field names to include. If provided,
+            only these fields will be included.
+        :param exclude: Optional blacklist of field names to exclude.
+        :return: True if the field should be excluded, False otherwise.
+        """
         key = self._get_field_name(column)
         if fields and key not in fields:
             return True
