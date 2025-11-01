@@ -18,6 +18,35 @@ if TYPE_CHECKING:
 # This isn't really a field; it's a placeholder for the metaclass.
 # This should be considered private API.
 class SQLAlchemyAutoField(Field):
+    """Placeholder field that is replaced by the schema metaclass during schema creation.
+
+    This is not a real marshmallow field. Instead, it acts as a marker that tells the
+    schema metaclass to automatically generate the appropriate field based on the
+    SQLAlchemy model's column or table definition.
+
+    When you use :func:`auto_field` in a schema definition, it creates an instance of
+    this class. During schema class creation, the metaclass processes these placeholder
+    fields and replaces them with actual marshmallow field instances (String, Integer,
+    Related, etc.) based on the SQLAlchemy column type.
+
+    .. note::
+        This class is part of the internal API and should not be instantiated directly.
+        Use the :func:`auto_field` function instead.
+
+    :param column_name: Name of the SQLAlchemy column to generate the field from.
+        If None, uses the field's attribute name on the schema.
+    :param model: SQLAlchemy model to use for field generation. If None, uses the
+        model specified in the schema's Meta class.
+    :param table: SQLAlchemy Table to use for field generation. If None, uses the
+        table specified in the schema's Meta class.
+    :param field_kwargs: Additional keyword arguments to pass to the generated field.
+
+    .. seealso::
+        - :func:`auto_field` - Public API for creating auto-generated fields
+        - :class:`SQLAlchemySchema` - Schema class that uses auto_field
+        - :class:`ModelConverter` - Handles the actual field generation
+    """
+
     def __init__(
         self,
         *,
@@ -42,6 +71,16 @@ class SQLAlchemyAutoField(Field):
         column_name: str,
         converter: ModelConverter,
     ):
+        """Generate the actual marshmallow field from the SQLAlchemy model or table.
+
+        This method is called by the schema metaclass during schema creation to replace
+        the placeholder SQLAlchemyAutoField with a real marshmallow field instance.
+
+        :param schema_opts: Schema options containing the model or table to use.
+        :param column_name: Name of the column to generate the field from.
+        :param converter: ModelConverter instance to use for field generation.
+        :return: A marshmallow Field instance appropriate for the column type.
+        """
         model = self.model or schema_opts.model
         if model:
             return converter.field_for(model, column_name, **self.field_kwargs)
@@ -103,6 +142,21 @@ class SQLAlchemyAutoSchemaOpts(SQLAlchemySchemaOpts):
 
 
 class SQLAlchemySchemaMeta(SchemaMeta):
+    """Metaclass for SQLAlchemySchema that handles auto-field generation.
+
+    This metaclass extends marshmallow's SchemaMeta to add support for SQLAlchemy-specific
+    field generation. It processes :class:`SQLAlchemyAutoField` placeholders created by
+    :func:`auto_field` and replaces them with appropriate marshmallow field instances
+    based on the SQLAlchemy model or table definition.
+
+    The metaclass also handles filtering of foreign key fields when ``include_fk=False``
+    is set in the schema options.
+
+    .. note::
+        This is an internal metaclass. Users should work with :class:`SQLAlchemySchema`
+        or :class:`SQLAlchemyAutoSchema` instead of using this metaclass directly.
+    """
+
     @classmethod
     def get_declared_fields(
         mcs,
@@ -111,6 +165,18 @@ class SQLAlchemySchemaMeta(SchemaMeta):
         inherited_fields: list[tuple[str, Field]],
         dict_cls: type[dict] = dict,
     ) -> dict[str, Field]:
+        """Collect and process all fields for the schema, including auto-generated ones.
+
+        This method is called during schema class creation. It combines declared fields,
+        inherited fields, SQLAlchemy-specific fields, and auto-generated fields into a
+        single dictionary of field instances.
+
+        :param klass: The schema class being created.
+        :param cls_fields: Fields explicitly declared on the schema class.
+        :param inherited_fields: Fields inherited from parent schema classes.
+        :param dict_cls: Dictionary class to use for the returned field mapping.
+        :return: Dictionary mapping field names to Field instances.
+        """
         opts = klass.opts
         Converter: type[ModelConverter] = opts.model_converter
         converter = Converter(schema_cls=klass)
@@ -134,6 +200,18 @@ class SQLAlchemySchemaMeta(SchemaMeta):
         opts: Any,
         dict_cls: type[dict],
     ) -> dict[str, Field]:
+        """Generate fields from SQLAlchemy model or table definition.
+
+        For :class:`SQLAlchemySchema`, this returns an empty dictionary since fields
+        must be explicitly declared with :func:`auto_field`. Subclasses like
+        :class:`SQLAlchemyAutoSchemaMeta` override this to auto-generate all fields.
+
+        :param base_fields: Already declared fields on the schema.
+        :param converter: ModelConverter instance for field generation.
+        :param opts: Schema options containing model/table and other settings.
+        :param dict_cls: Dictionary class to use for the returned field mapping.
+        :return: Dictionary of auto-generated fields (empty for base SQLAlchemySchema).
+        """
         return {}
 
     @classmethod
@@ -144,6 +222,19 @@ class SQLAlchemySchemaMeta(SchemaMeta):
         opts: Any,
         dict_cls: type[dict],
     ) -> dict[str, Field]:
+        """Process and replace SQLAlchemyAutoField placeholders with real field instances.
+
+        Iterates through all fields, finds instances of :class:`SQLAlchemyAutoField`,
+        and calls their :meth:`~SQLAlchemyAutoField.create_field` method to generate
+        the appropriate marshmallow field based on the SQLAlchemy column type.
+
+        :param fields: Dictionary of all fields declared on the schema, including
+            SQLAlchemyAutoField placeholders.
+        :param converter: ModelConverter instance for field generation.
+        :param opts: Schema options containing model/table and other settings.
+        :param dict_cls: Dictionary class to use for the returned field mapping.
+        :return: Dictionary mapping field names to generated Field instances.
+        """
         return dict_cls(
             {
                 field_name: field.create_field(
@@ -162,6 +253,17 @@ class SQLAlchemySchemaMeta(SchemaMeta):
         opts: SQLAlchemySchemaOpts,
         klass: SchemaMeta,
     ) -> list[tuple[str, Field]]:
+        """Filter out foreign key fields from inherited fields if include_fk is False.
+
+        When ``include_fk=False`` in schema options, this method removes fields that
+        correspond to foreign key columns, unless those fields were explicitly declared
+        (not auto-generated) in a parent schema class.
+
+        :param fields: List of (name, field) tuples from parent schemas.
+        :param opts: Schema options, containing include_fk setting and model/table.
+        :param klass: The schema class being created.
+        :return: Filtered list of fields with foreign key fields removed if appropriate.
+        """
         if opts.model is not None or opts.table is not None:
             if not hasattr(opts, "include_fk") or opts.include_fk is True:
                 return fields
@@ -199,10 +301,37 @@ class SQLAlchemySchemaMeta(SchemaMeta):
 
 
 class SQLAlchemyAutoSchemaMeta(SQLAlchemySchemaMeta):
+    """Metaclass for SQLAlchemyAutoSchema that automatically generates all fields.
+
+    This metaclass extends :class:`SQLAlchemySchemaMeta` to automatically generate
+    marshmallow fields for all columns in a SQLAlchemy model or table, without requiring
+    explicit :func:`auto_field` declarations.
+
+    The behavior is controlled by schema Meta options:
+    - ``include_fk``: Whether to include foreign key columns as fields
+    - ``include_relationships``: Whether to include relationship properties as fields
+
+    .. note::
+        This is an internal metaclass. Users should work with :class:`SQLAlchemyAutoSchema`
+        instead of using this metaclass directly.
+    """
+
     @classmethod
     def get_declared_sqla_fields(
         cls, base_fields, converter: ModelConverter, opts, dict_cls
     ):
+        """Auto-generate fields for all columns in the model or table.
+
+        Overrides the parent method to automatically create fields for every column
+        in the SQLAlchemy model or table, respecting the ``include_fk`` and
+        ``include_relationships`` options.
+
+        :param base_fields: Already declared fields on the schema.
+        :param converter: ModelConverter instance for field generation.
+        :param opts: Schema options containing model/table and generation settings.
+        :param dict_cls: Dictionary class to use for the returned field mapping.
+        :return: Dictionary of auto-generated fields for all model/table columns.
+        """
         fields = dict_cls()
         if opts.table is not None:
             fields.update(
@@ -233,23 +362,64 @@ class SQLAlchemyAutoSchemaMeta(SQLAlchemySchemaMeta):
 class SQLAlchemySchema(
     LoadInstanceMixin.Schema[_ModelType], Schema, metaclass=SQLAlchemySchemaMeta
 ):
-    """Schema for a SQLAlchemy model or table.
-    Use together with `auto_field` to generate fields from columns.
+    """Schema for a SQLAlchemy model or table with explicit field declarations.
+
+    Use this schema class when you want fine-grained control over which fields to include
+    and their configuration. Fields must be explicitly declared using :func:`auto_field`,
+    which generates the appropriate marshmallow field based on the SQLAlchemy column type.
+
+    This approach is useful when you only need a subset of model columns, want to customize
+    field behavior, or need to maintain compatibility with specific marshmallow patterns.
+
+    **Key Features:**
+
+    - Explicit field control with :func:`auto_field`
+    - Support for both SQLAlchemy models and tables
+    - Optional instance deserialization with ``load_instance=True``
+    - Session-aware loading and transient mode support
+    - Customizable field generation via ``model_converter``
+
+    **Meta Options:**
+
+    - ``model``: SQLAlchemy model class (mutually exclusive with ``table``)
+    - ``table``: SQLAlchemy Table object (mutually exclusive with ``model``)
+    - ``load_instance``: If True, deserialize to model instances (default: False)
+    - ``sqla_session``: SQLAlchemy session for loading instances
+    - ``transient``: If True, create transient instances without session binding
+    - ``model_converter``: Custom ModelConverter class for field generation
 
     Example: ::
 
         from marshmallow_sqlalchemy import SQLAlchemySchema, auto_field
-
         from mymodels import User
 
 
         class UserSchema(SQLAlchemySchema):
             class Meta:
                 model = User
+                load_instance = True
 
             id = auto_field()
             created_at = auto_field(dump_only=True)
             name = auto_field()
+            email = auto_field()
+
+
+        # Serialization
+        schema = UserSchema()
+        user = User(id=1, name="John", email="john@example.com")
+        result = schema.dump(user)
+        # {'id': 1, 'name': 'John', 'email': 'john@example.com', 'created_at': '2024-01-01T00:00:00'}
+
+        # Deserialization to model instance
+        data = {"name": "Jane", "email": "jane@example.com"}
+        user_instance = schema.load(data, session=session)
+        # <User(name='Jane')>
+
+    .. seealso::
+        - :class:`SQLAlchemyAutoSchema` - Automatically generates fields for all columns
+        - :func:`auto_field` - Declares a field to be auto-generated
+        - :class:`ModelConverter` - Handles SQLAlchemy type to marshmallow field conversion
     """
 
     OPTIONS_CLASS = SQLAlchemySchemaOpts
@@ -258,23 +428,78 @@ class SQLAlchemySchema(
 class SQLAlchemyAutoSchema(
     SQLAlchemySchema[_ModelType], metaclass=SQLAlchemyAutoSchemaMeta
 ):
-    """Schema that automatically generates fields from the columns of
-     a SQLAlchemy model or table.
+    """Schema that automatically generates fields for all columns in a SQLAlchemy model or table.
+
+    Use this schema class when you want to serialize/deserialize all or most columns from
+    a SQLAlchemy model without explicitly declaring each field. Fields are automatically
+    generated based on column types, with options to control foreign keys and relationships.
+
+    This approach is convenient for CRUD APIs and when your schema closely mirrors your
+    database model. You can still override or customize individual fields using
+    :func:`auto_field` or by declaring regular marshmallow fields.
+
+    **Key Features:**
+
+    - Automatic field generation for all columns
+    - Optional foreign key inclusion via ``include_fk``
+    - Optional relationship serialization via ``include_relationships``
+    - Selective field control with ``fields`` and ``exclude`` Meta options
+    - Field customization by overriding specific fields in schema definition
+
+    **Meta Options:**
+
+    All options from :class:`SQLAlchemySchema`, plus:
+
+    - ``include_fk``: Include foreign key columns as fields (default: False)
+    - ``include_relationships``: Include relationship properties as fields (default: False)
+    - ``fields``: Whitelist of field names to include (all others excluded)
+    - ``exclude``: Blacklist of field names to exclude
+
+    **When to use SQLAlchemyAutoSchema vs SQLAlchemySchema:**
+
+    - Use ``SQLAlchemyAutoSchema`` when you want most/all model fields in your schema
+    - Use ``SQLAlchemySchema`` when you only need a small subset of fields or want
+      maximum control over field generation
 
     Example: ::
 
         from marshmallow_sqlalchemy import SQLAlchemyAutoSchema, auto_field
+        from mymodels import User, Article
 
-        from mymodels import User
 
-
+        # Auto-generate all fields
         class UserSchema(SQLAlchemyAutoSchema):
             class Meta:
                 model = User
-                # OR
-                # table = User.__table__
+                load_instance = True
+                include_relationships = True
 
+
+        # Auto-generate with customization
+        class ArticleSchema(SQLAlchemyAutoSchema):
+            class Meta:
+                model = Article
+                include_fk = True
+                exclude = ["internal_notes"]  # Exclude sensitive fields
+
+            # Override auto-generated field
             created_at = auto_field(dump_only=True)
+
+
+        # Using with tables instead of models
+        class UserTableSchema(SQLAlchemyAutoSchema):
+            class Meta:
+                table = User.__table__
+                include_fk = True
+
+    .. note::
+        When using ``table`` instead of ``model``, ``include_relationships`` must be
+        False (the default) since tables don't have relationship properties.
+
+    .. seealso::
+        - :class:`SQLAlchemySchema` - For explicit field control
+        - :func:`auto_field` - For customizing individual auto-generated fields
+        - :class:`ModelConverter` - Handles type conversion logic
     """
 
     OPTIONS_CLASS = SQLAlchemyAutoSchemaOpts
@@ -285,19 +510,69 @@ def auto_field(
     *,
     model: type[DeclarativeMeta] | None = None,
     table: sa.Table | None = None,
-    # TODO: add type annotations for **kwargs
-    **kwargs,
+    **kwargs: Any,
 ) -> SQLAlchemyAutoField:
-    """Mark a field to autogenerate from a model or table.
+    """Mark a field to be auto-generated from a SQLAlchemy model or table column.
 
-    :param column_name: Name of the column to generate the field from.
-        If ``None``, matches the field name. If ``attribute`` is unspecified,
-        ``attribute`` will be set to the same value as ``column_name``.
-    :param model: Model to generate the field from.
-        If ``None``, uses ``model`` specified on ``class Meta``.
-    :param table: Table to generate the field from.
-        If ``None``, uses ``table`` specified on ``class Meta``.
-    :param kwargs: Field argument overrides.
+    This function creates a placeholder that the schema metaclass will replace with an
+    appropriate marshmallow field (String, Integer, DateTime, Related, etc.) based on
+    the SQLAlchemy column type.
+
+    Use this in :class:`SQLAlchemySchema` to explicitly declare which fields to include,
+    or in :class:`SQLAlchemyAutoSchema` to customize auto-generated fields.
+
+    :param column_name: Name of the SQLAlchemy column to generate the field from.
+        If ``None``, uses the field's attribute name on the schema class.
+        If ``attribute`` is not provided in kwargs, it will automatically be set
+        to match ``column_name``.
+    :param model: SQLAlchemy model class to use for field generation.
+        If ``None``, uses the ``model`` specified in the schema's Meta class.
+        Mutually exclusive with ``table``.
+    :param table: SQLAlchemy Table object to use for field generation.
+        If ``None``, uses the ``table`` specified in the schema's Meta class.
+        Mutually exclusive with ``model``.
+    :param kwargs: Additional keyword arguments passed to the generated marshmallow field.
+        Common options include:
+
+        - ``dump_only``: Field is only used for serialization
+        - ``load_only``: Field is only used for deserialization
+        - ``required``: Override auto-detected required status
+        - ``allow_none``: Override auto-detected nullable status
+        - ``validate``: Add custom validators
+        - ``dump_default``: Default value when serializing
+        - ``load_default``: Default value when deserializing
+
+    :return: A SQLAlchemyAutoField placeholder that will be replaced during schema creation.
+
+    Example: ::
+
+        from marshmallow_sqlalchemy import SQLAlchemySchema, auto_field
+        from mymodels import User
+
+
+        class UserSchema(SQLAlchemySchema):
+            class Meta:
+                model = User
+
+            # Basic auto-field
+            id = auto_field()
+
+            # With field customization
+            email = auto_field(required=True, validate=validate.Email())
+
+            # With dump_only (won't accept this field during load)
+            created_at = auto_field(dump_only=True)
+
+            # From a different column name
+            user_name = auto_field(column_name="username")
+
+            # From a specific model (useful in inheritance scenarios)
+            admin_flag = auto_field(model=AdminUser)
+
+    .. seealso::
+        - :class:`SQLAlchemySchema` - Schema requiring explicit auto_field declarations
+        - :class:`SQLAlchemyAutoSchema` - Auto-generates fields without explicit declarations
+        - :class:`ModelConverter` - Performs the actual field generation
     """
     if column_name is not None:
         kwargs.setdefault("attribute", column_name)
